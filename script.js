@@ -1,59 +1,85 @@
 /* ============================================================
-   NO API KEY NEEDED — 100% FREE — WORKS OFFLINE
-   Uses Tesseract.js (OCR) to read certificate text locally
-   in your browser. No data is sent anywhere.
+   FIREBASE CONFIG — certificates saved to cloud
+   Visible on every device, everywhere
 ============================================================ */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-const STORE_KEY = 'bj_portfolio_certs';
+const firebaseConfig = {
+    apiKey: "AIzaSyBsPBXkfZ6-06r-V3Q0TVKelCxcuwPCY6E",
+    authDomain: "bhagyajyoti-portfolio.firebaseapp.com",
+    projectId: "bhagyajyoti-portfolio",
+    storageBucket: "bhagyajyoti-portfolio.firebasestorage.app",
+    messagingSenderId: "982860168007",
+    appId: "1:982860168007:web:2fbc6ea8b85396bbea2a62"
+};
 
-let b64       = null;   // base64 image for preview
-let imgBlob   = null;   // image blob for OCR
-let editI     = null;   // index being edited
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+const COL = collection(db, 'certificates');
+
+/* ============================================================
+   DO NOT EDIT BELOW THIS LINE
+============================================================ */
+let editId     = null;   // Firestore doc id being edited
 let fromUpload = false;
-
-/* ── STORAGE ── */
-function load()      { try { return JSON.parse(localStorage.getItem(STORE_KEY)) || []; } catch { return []; } }
-function save(certs) { localStorage.setItem(STORE_KEY, JSON.stringify(certs)); }
+let b64        = null;
+let imgBlob    = null;
 
 /* ── RENDER CERT CARDS ── */
-function render() {
-    const certs = load();
+async function render() {
     const grid  = document.getElementById('cert-grid');
     const empty = document.getElementById('cert-empty');
-    grid.innerHTML = '';
-    if (!certs.length) { empty.style.display = 'block'; return; }
-    empty.style.display = 'none';
-    certs.forEach((c, i) => {
-        const d = document.createElement('div');
-        d.className = 'cert-card';
-        d.innerHTML = `
-            <div class="cert-card-top">
-                <span class="cert-badge">${x(c.category)}</span>
-                <div class="cert-acts">
-                    <button title="Edit" onclick="openEdit(${i})">✎</button>
-                    <button class="del" title="Delete" onclick="del(${i})">✕</button>
+    grid.innerHTML = '<p style="color:#888;font-size:.9rem;padding:10px">Loading...</p>';
+
+    try {
+        const snap  = await getDocs(COL);
+        const certs = [];
+        snap.forEach(d => certs.push({ id: d.id, ...d.data() }));
+
+        grid.innerHTML = '';
+        if (!certs.length) { empty.style.display = 'block'; return; }
+        empty.style.display = 'none';
+
+        certs.forEach(c => {
+            const card = document.createElement('div');
+            card.className = 'cert-card';
+            card.innerHTML = `
+                <div class="cert-card-top">
+                    <span class="cert-badge">${x(c.category)}</span>
+                    <div class="cert-acts">
+                        <button title="Edit" onclick="openEdit('${c.id}')">✎</button>
+                        <button class="del" title="Delete" onclick="del('${c.id}')">✕</button>
+                    </div>
                 </div>
-            </div>
-            <h3>${x(c.name)}</h3>
-            <p class="issuer">${x(c.issuer)}</p>
-            <p class="cdate">${x(c.date)}</p>
-            ${c.url ? `<a class="cert-link" href="${x(c.url)}" target="_blank">View Certificate ↗</a>` : ''}
-        `;
-        grid.appendChild(d);
-    });
+                <h3>${x(c.name)}</h3>
+                <p class="issuer">${x(c.issuer)}</p>
+                <p class="cdate">${x(c.date)}</p>
+                ${c.url ? `<a class="cert-link" href="${x(c.url)}" target="_blank">View Certificate ↗</a>` : ''}
+            `;
+            grid.appendChild(card);
+        });
+    } catch (e) {
+        grid.innerHTML = '';
+        document.getElementById('cert-empty').style.display = 'block';
+        console.error('Firebase error:', e);
+    }
 }
 
 function x(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
 /* ── DELETE ── */
-function del(i) {
+async function del(id) {
     if (!confirm('Delete this certificate?')) return;
-    const c = load(); c.splice(i, 1); save(c); render();
+    try {
+        await deleteDoc(doc(db, 'certificates', id));
+        render();
+    } catch(e) { alert('Error deleting. Try again.'); }
 }
 
 /* ── UPLOAD MODAL ── */
 function openUpload() {
-    editI = null; fromUpload = true;
+    editId = null; fromUpload = true;
     resetUpload();
     open_('upload-overlay');
 }
@@ -86,21 +112,16 @@ function pick(file) {
     const ok = ['image/jpeg','image/png','image/webp','application/pdf'];
     if (!ok.includes(file.type)) { errEl.textContent = 'Please upload a JPG, PNG, or PDF file.'; return; }
     if (file.size > 20 * 1024 * 1024) { errEl.textContent = 'File too large. Use a file under 20MB.'; return; }
-
-    if (file.type === 'application/pdf') {
-        convertPDF(file);
-    } else {
+    if (file.type === 'application/pdf') { convertPDF(file); }
+    else {
         imgBlob = file;
         const r = new FileReader();
-        r.onload = ev => {
-            b64 = ev.target.result;
-            showPreview(b64, file.name);
-        };
+        r.onload = ev => { b64 = ev.target.result; showPreview(b64, file.name); };
         r.readAsDataURL(file);
     }
 }
 
-/* ── PDF → IMAGE via PDF.js ── */
+/* ── PDF → IMAGE ── */
 async function convertPDF(file) {
     showAIBar('Converting PDF...');
     try {
@@ -112,19 +133,18 @@ async function convertPDF(file) {
         const buf  = await file.arrayBuffer();
         const pdf  = await pdfjsLib.getDocument({ data: buf }).promise;
         const page = await pdf.getPage(1);
-        const vp   = page.getViewport({ scale: 3.0 }); // high res for better OCR
+        const vp   = page.getViewport({ scale: 3.0 });
         const cv   = document.createElement('canvas');
         cv.width = vp.width; cv.height = vp.height;
         await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
-        b64 = cv.toDataURL('image/png');
-        // Convert dataURL to blob for Tesseract
-        const res  = await fetch(b64);
-        imgBlob    = await res.blob();
+        b64     = cv.toDataURL('image/png');
+        const r = await fetch(b64);
+        imgBlob = await r.blob();
         hideAIBar();
         showPreview(b64, file.name + ' (page 1)');
     } catch (e) {
         hideAIBar();
-        document.getElementById('upload-err').textContent = 'Could not read PDF. Try a JPG/PNG screenshot instead.';
+        document.getElementById('upload-err').textContent = 'Could not read PDF. Try a JPG/PNG instead.';
     }
 }
 
@@ -145,43 +165,32 @@ function showPreview(dataUrl, name) {
     document.getElementById('analyze-btn').disabled       = false;
 }
 
-/* ── OCR WITH TESSERACT.JS (100% FREE, RUNS IN BROWSER) ── */
+/* ── OCR WITH TESSERACT.JS ── */
 async function analyze() {
     if (!imgBlob && !b64) return;
-
-    showAIBar('Loading OCR engine (first time takes ~10 seconds)...');
+    showAIBar('Loading OCR engine (first time ~10 seconds)...');
     document.getElementById('analyze-btn').disabled = true;
     document.getElementById('upload-err').textContent = '';
-
     try {
-        // Load Tesseract.js from CDN
         if (!window.Tesseract) {
             await loadJS('https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js');
         }
-
         showAIBar('Reading text from certificate...');
-
         const source = imgBlob || b64;
         const result = await Tesseract.recognize(source, 'eng', {
             logger: m => {
                 if (m.status === 'recognizing text') {
-                    const pct = Math.round((m.progress || 0) * 100);
-                    showAIBar(`Reading certificate... ${pct}%`);
+                    showAIBar(`Reading certificate... ${Math.round((m.progress||0)*100)}%`);
                 }
             }
         });
-
         const text = result.data.text;
-        if (!text || text.trim().length < 10) {
-            throw new Error('Could not read text from image. Make sure the certificate is clear and not blurry.');
-        }
-
-        showAIBar('Extracting certificate details...');
+        if (!text || text.trim().length < 10) throw new Error('Could not read text. Make sure the image is clear and not blurry.');
+        showAIBar('Extracting details...');
         const extracted = parseText(text);
         hideAIBar();
         closeUpload();
         openForm(extracted, false);
-
     } catch (e) {
         hideAIBar();
         document.getElementById('analyze-btn').disabled = false;
@@ -189,93 +198,53 @@ async function analyze() {
     }
 }
 
-/* ── SMART TEXT PARSER ── */
+/* ── TEXT PARSER ── */
 function parseText(raw) {
     const lines = raw.split('\n').map(l => l.trim()).filter(l => l.length > 2);
     const text  = raw.toLowerCase();
-
-    // ── NAME: find the longest meaningful line (usually the course title) ──
-    // Skip short lines, lines that are just numbers, common header words
-    const skipWords = ['certificate','congratulations','this is to certify','certify that','successfully','completed','issued','date','valid','verify','credential','authentication','signature','authorized','director','instructor','linkedin','coursera','udemy','nptel','google','microsoft','amazon','issued by','presented to','awarded to','has successfully','of completion','of achievement'];
-
-    let nameLine = '';
-    let nameScore = 0;
-
+    const skip  = ['certificate','congratulations','this is to certify','certify that','successfully','completed','issued','date','valid','verify','credential','signature','authorized','director','instructor','linkedin','coursera','udemy','nptel','google','microsoft','amazon','presented to','awarded to','has successfully','of completion','of achievement'];
+    let nameLine = '', nameScore = 0;
     for (const line of lines) {
         const ll = line.toLowerCase();
-        const isSkip = skipWords.some(w => ll.includes(w));
-        const isDate = /\d{4}|\d{1,2}[\/\-]\d{1,2}/.test(line);
-        const isShort = line.length < 8;
-        const isCaps = line === line.toUpperCase() && line.length > 4; // ALL CAPS often = title
-
-        // Score: longer non-skip lines score higher
-        if (!isSkip && !isDate && !isShort) {
-            const score = line.length + (isCaps ? 20 : 0);
-            if (score > nameScore) { nameScore = score; nameLine = line; }
-        }
+        if (skip.some(w => ll.includes(w))) continue;
+        if (/\d{4}|\d{1,2}[\/\-]\d{1,2}/.test(line)) continue;
+        if (line.length < 8) continue;
+        const score = line.length + (line === line.toUpperCase() && line.length > 4 ? 20 : 0);
+        if (score > nameScore) { nameScore = score; nameLine = line; }
     }
-
-    // ── ISSUER: look for known platforms and organizations ──
-    const issuers = [
-        'coursera','udemy','nptel','linkedin learning','linkedin',
-        'google','microsoft','amazon','aws','oracle','ibm',
-        'infosys','tcs','wipro','nasscom','simplilearn','edx',
-        'pluralsight','codecademy','great learning','upgrad',
-        'internshala','skillshare','alison','swayam','spoken tutorial'
-    ];
+    const issuers = ['coursera','udemy','nptel','linkedin learning','google','microsoft','amazon','aws','oracle','ibm','infosys','tcs','wipro','nasscom','simplilearn','edx','pluralsight','great learning','upgrad','internshala','swayam'];
     let issuer = '';
     for (const org of issuers) {
         if (text.includes(org)) {
-            // Find the line that contains it (preserve original case)
             const found = lines.find(l => l.toLowerCase().includes(org));
-            if (found) { issuer = found.length < 60 ? found : org.charAt(0).toUpperCase() + org.slice(1); break; }
+            issuer = found && found.length < 60 ? found : org.charAt(0).toUpperCase() + org.slice(1);
+            break;
         }
     }
-
-    // ── DATE: find date patterns ──
     const months = 'january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec';
-    const datePatterns = [
-        new RegExp(`(${months})\\s+\\d{4}`, 'i'),          // March 2025
-        new RegExp(`\\d{1,2}\\s+(${months})\\s+\\d{4}`, 'i'), // 15 March 2025
-        /\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/,               // 03/15/2025
-        /\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}/,                  // 2025-03-15
-        /\d{4}/                                              // just year
-    ];
+    const datePatterns = [new RegExp(`(${months})\\s+\\d{4}`,'i'), new RegExp(`\\d{1,2}\\s+(${months})\\s+\\d{4}`,'i'), /\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/, /\d{4}/];
     let date = '';
-    for (const pat of datePatterns) {
-        const m = raw.match(pat);
-        if (m) { date = m[0]; break; }
-    }
-
-    // ── CATEGORY: keyword matching ──
+    for (const p of datePatterns) { const m = raw.match(p); if (m) { date = m[0]; break; } }
     let category = 'Other';
     const catMap = [
-        { cat: 'Full-Stack', keys: ['full stack','full-stack','mern','mean','web development','web dev'] },
-        { cat: 'Backend',    keys: ['java','spring','spring boot','node','python','django','flask','backend','server','api','rest','database design','sql','mongodb','microservice'] },
-        { cat: 'Frontend',   keys: ['html','css','javascript','react','angular','vue','frontend','front-end','ui','ux','bootstrap','tailwind'] },
-        { cat: 'Database',   keys: ['mysql','postgresql','mongodb','oracle','database','sql','nosql','dbms'] },
-        { cat: 'Cloud',      keys: ['aws','azure','cloud','gcp','google cloud','devops','docker','kubernetes','ci/cd'] },
+        { cat:'Full-Stack', keys:['full stack','full-stack','mern','mean','web development'] },
+        { cat:'Backend',    keys:['java','spring','node','python','django','backend','api','rest','microservice'] },
+        { cat:'Frontend',   keys:['html','css','javascript','react','angular','vue','frontend','ui','ux'] },
+        { cat:'Database',   keys:['mysql','postgresql','mongodb','oracle','database','sql','nosql','dbms'] },
+        { cat:'Cloud',      keys:['aws','azure','cloud','gcp','devops','docker','kubernetes'] },
     ];
-    for (const { cat, keys } of catMap) {
-        if (keys.some(k => text.includes(k))) { category = cat; break; }
-    }
-
-    return {
-        name:     nameLine || '',
-        issuer:   issuer   || '',
-        date:     date     || '',
-        category
-    };
+    for (const { cat, keys } of catMap) { if (keys.some(k => text.includes(k))) { category = cat; break; } }
+    return { name: nameLine || '', issuer: issuer || '', date: date || '', category };
 }
 
 /* ── FORM MODAL — new ── */
 function openForm(data, manual) {
-    editI = null;
+    editId = null;
     document.getElementById('form-title').textContent = 'Certificate Details';
     const hint = document.getElementById('form-hint');
     hint.textContent = manual
         ? 'Fill in your certificate details. Fields marked * are required.'
-        : '✓ Details extracted from your certificate. Review and fix anything, then save.';
+        : '✓ Details extracted. Review and fix anything, then save.';
     hint.style.display = 'block';
     document.getElementById('back-btn').style.display = fromUpload ? 'inline-block' : 'none';
     fill(data);
@@ -284,15 +253,20 @@ function openForm(data, manual) {
 }
 
 /* ── FORM MODAL — edit ── */
-function openEdit(i) {
-    editI = i; fromUpload = false;
-    const c = load()[i]; if (!c) return;
-    document.getElementById('form-title').textContent  = 'Edit Certificate';
-    document.getElementById('form-hint').style.display = 'none';
-    document.getElementById('back-btn').style.display  = 'none';
-    fill(c);
-    document.getElementById('form-err').textContent = '';
-    open_('form-overlay');
+async function openEdit(id) {
+    editId = id; fromUpload = false;
+    try {
+        const snap = await getDocs(COL);
+        let certData = null;
+        snap.forEach(d => { if (d.id === id) certData = d.data(); });
+        if (!certData) return;
+        document.getElementById('form-title').textContent  = 'Edit Certificate';
+        document.getElementById('form-hint').style.display = 'none';
+        document.getElementById('back-btn').style.display  = 'none';
+        fill(certData);
+        document.getElementById('form-err').textContent = '';
+        open_('form-overlay');
+    } catch(e) { alert('Error loading certificate.'); }
 }
 
 function fill(d) {
@@ -305,37 +279,50 @@ function fill(d) {
     sel.value = [...sel.options].some(o => o.value === cat) ? cat : 'Other';
 }
 
-function closeForm() { close_('form-overlay'); editI = null; }
+function closeForm() { close_('form-overlay'); editId = null; }
 function goBack()    { closeForm(); openUpload(); }
 
-/* ── SAVE ── */
-function saveCert() {
+/* ── SAVE TO FIREBASE ── */
+async function saveCert() {
     const name   = document.getElementById('f-name').value.trim();
     const issuer = document.getElementById('f-issuer').value.trim();
     const date   = document.getElementById('f-date').value.trim();
     const url    = document.getElementById('f-url').value.trim();
     const cat    = document.getElementById('f-cat').value;
     const errEl  = document.getElementById('form-err');
+    const btn    = document.querySelector('#form-overlay .btn-analyze');
 
     if (!name || !issuer || !date) { errEl.textContent = 'Name, Issuer, and Date are required.'; return; }
     if (url && !validURL(url))     { errEl.textContent = 'Enter a valid URL starting with https://'; return; }
 
     errEl.textContent = '';
-    const certs = load();
-    const cert  = { name, issuer, date, url, category: cat };
-    if (editI !== null) certs[editI] = cert; else certs.push(cert);
-    save(certs); render(); closeForm();
+    btn.textContent   = 'Saving...';
+    btn.disabled      = true;
+
+    try {
+        const cert = { name, issuer, date, url, category: cat };
+        if (editId) {
+            await updateDoc(doc(db, 'certificates', editId), cert);
+        } else {
+            await addDoc(COL, cert);
+        }
+        btn.textContent = 'Save Certificate';
+        btn.disabled    = false;
+        closeForm();
+        render();
+    } catch(e) {
+        btn.textContent = 'Save Certificate';
+        btn.disabled    = false;
+        errEl.textContent = 'Error saving. Check your internet connection.';
+    }
 }
 
 /* ── HELPERS ── */
-function showAIBar(msg) {
-    document.getElementById('ai-bar').style.display = 'flex';
-    document.getElementById('ai-bar-text').textContent = msg;
-}
-function hideAIBar() { document.getElementById('ai-bar').style.display = 'none'; }
-function open_(id)   { document.getElementById(id).classList.add('open'); }
-function close_(id)  { document.getElementById(id).classList.remove('open'); }
-function validURL(u) { try { return Boolean(new URL(u)); } catch { return false; } }
+function showAIBar(msg) { document.getElementById('ai-bar').style.display='flex'; document.getElementById('ai-bar-text').textContent=msg; }
+function hideAIBar()    { document.getElementById('ai-bar').style.display='none'; }
+function open_(id)      { document.getElementById(id).classList.add('open'); }
+function close_(id)     { document.getElementById(id).classList.remove('open'); }
+function validURL(u)    { try { return Boolean(new URL(u)); } catch { return false; } }
 
 document.querySelectorAll('.overlay').forEach(o => {
     o.addEventListener('click', e => {
@@ -346,8 +333,20 @@ document.querySelectorAll('.overlay').forEach(o => {
     });
 });
 
-document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { closeUpload(); closeForm(); }
-});
-
+document.addEventListener('keydown', e => { if (e.key==='Escape') { closeUpload(); closeForm(); } });
 document.addEventListener('DOMContentLoaded', render);
+
+/* ── EXPOSE FUNCTIONS TO HTML ── */
+window.openUpload = openUpload;
+window.closeUpload = closeUpload;
+window.resetUpload = resetUpload;
+window.onFileSelect = onFileSelect;
+window.onDragOver = onDragOver;
+window.onDragLeave = onDragLeave;
+window.onDrop = onDrop;
+window.analyze = analyze;
+window.openEdit = openEdit;
+window.del = del;
+window.closeForm = closeForm;
+window.goBack = goBack;
+window.saveCert = saveCert;
